@@ -37,7 +37,9 @@ COMMENT_AUTHOR = os.environ["COMMENT_AUTHOR"]
 
 # Optional tuning via workflow env / repo variables
 EXCEPTION_DAYS = int(os.environ.get("EXCEPTION_DAYS", "30"))
-EXCEPTION_ENVIRONMENT = os.environ.get("EXCEPTION_ENVIRONMENT", "")  # e.g. "Production"
+# Environment is required in the exception scope. The findings' own environment
+# is used first; this is only the fallback.
+EXCEPTION_ENVIRONMENT = os.environ.get("EXCEPTION_ENVIRONMENT") or "Production"
 
 REPO_NAME = REPO.split("/")[-1]
 
@@ -74,6 +76,15 @@ def subproduct_id_of(finding: dict):
     if isinstance(sp, dict) and sp.get("id"):
         return sp["id"]
     return finding.get("aspId")
+
+
+def environment_name_of(finding: dict):
+    env = finding.get("environment")
+    if isinstance(env, dict) and env.get("name"):
+        return env["name"]
+    if isinstance(env, str) and env:
+        return env
+    return finding.get("environmentName") or finding.get("aeName")
 
 
 def find_findings_for_repo(repo_name: str) -> list[dict]:
@@ -133,7 +144,9 @@ def find_assignable_exception(finding_ids: list[int]) -> dict | None:
     return candidates[0] if candidates else None
 
 
-def create_exception(product_id: int, subproduct_ids: list[int], reason: str) -> dict:
+def create_exception(
+    product_id: int, subproduct_ids: list[int], environment_name: str, reason: str
+) -> dict:
     """
     POST /api/risk-register
     Required by the Swagger example: name, description, startDate, endDate,
@@ -141,11 +154,11 @@ def create_exception(product_id: int, subproduct_ids: list[int], reason: str) ->
     New exceptions start in DRAFT and need approval in ArmorCode.
     """
     now = datetime.now(timezone.utc)
-    scope = {"productId": product_id}
+    # ArmorCode rejects a product-scoped exception without an environment:
+    # "Environment name is required when product is selected for risk register scope"
+    scope = {"productId": product_id, "environmentName": environment_name}
     if subproduct_ids:
         scope["subProductIds"] = subproduct_ids
-    if EXCEPTION_ENVIRONMENT:
-        scope["environmentName"] = EXCEPTION_ENVIRONMENT
     body = {
         "name": f"PR exception request: {REPO_NAME} PR {PR_NUMBER} ({now:%Y%m%d%H%M})",
         "description": f"{reason}\n\nRequested by {COMMENT_AUTHOR} via GitHub PR #{PR_NUMBER} in {REPO}.",
@@ -229,6 +242,15 @@ def main() -> None:
         raise RuntimeError("Could not read a product ID from the findings response.")
     findings = [f for f in findings if product_id_of(f) == product_id]
 
+    # An exception is also scoped to one environment. Use the first finding's
+    # environment when the response carries it, else the configured fallback,
+    # and only attach findings from that environment.
+    environment_name = environment_name_of(findings[0]) or EXCEPTION_ENVIRONMENT
+    findings = [
+        f for f in findings
+        if environment_name_of(f) in (None, environment_name)
+    ]
+
     finding_ids = [f["id"] for f in findings]
     subproduct_ids = sorted({sid for f in findings if (sid := subproduct_id_of(f))})
 
@@ -237,7 +259,7 @@ def main() -> None:
         exception_id, exception_name = existing["id"], existing.get("name", "")
         action_taken = "added to an existing exception"
     else:
-        created = create_exception(product_id, subproduct_ids, reason)
+        created = create_exception(product_id, subproduct_ids, environment_name, reason)
         data = created.get("data", created)
         exception_id, exception_name = data["id"], data.get("name", "")
         action_taken = "filed under a new exception (Draft)"
