@@ -14,13 +14,16 @@ Flow:
      and a rolling expiry.
   4. Post a confirmation comment back on the PR with a link to the exception.
 
-Two things below are flagged NEEDS_VERIFICATION because the codebase search
-that produced this endpoint list could not confirm them from the controller
-signatures alone. Check them against your tenant's live Swagger/OpenAPI
-doc before relying on this in production:
-  - The exact filter key for "repository name" in the finding search body.
-  - The exact route for looking up a product's business unit ID (the
-    subproduct-by-product route IS confirmed; the product/BU lookup is not).
+Endpoints used (all taken from the ArmorCode codebase):
+  - POST /api/filter                           search findings
+  - POST /api/risk-register/assignable         find a reusable exception
+  - POST /api/risk-register                    create an exception
+  - PUT  /user/findings/bulk/assign-risk-register  attach findings (APPEND)
+
+If a later step fails with "Request method ... is not supported" or a 401/403,
+the route or API key scope for that step needs checking against your tenant's
+Swagger. The /user/... route in particular is a UI-style path and is the
+most likely next thing to need adjusting for API key access.
 """
 
 import os
@@ -59,32 +62,28 @@ def parse_reason(comment_body: str) -> str:
 
 def find_findings_for_repo(repo_name: str) -> list[dict]:
     """
-    POST /user/findings
+    POST /api/filter
 
-    NEEDS_VERIFICATION: the filter key used here ("repositoryName") is our
-    best read of the finding property name confirmed in the code
-    (CrgGraphService references repositoryName / repositoryUrl on findings),
-    but the finding-search filter key spelling itself was not confirmed by
-    the controller search. Check the deployed OpenAPI schema for the exact
-    key (it may be namespaced, e.g. "repository.name" or similar) and adjust
-    the body below before relying on this in production.
+    Confirmed from the codebase: findings search is POST /api/filter, with a
+    body of {"filters": {...}, "page": N, "size": N}. Filter keys come from
+    FilterTypeEnum: repositoryName, status, productId, subProduct, id.
+    Status values are lowercase (open, confirmed). Results are in "content",
+    and each finding carries "id" (finding ID) and "apId" (product ID).
     """
     body = {
         "filters": {
             "repositoryName": [repo_name],
-            "status": ["OPEN", "CONFIRMED"],
+            "status": ["open", "confirmed"],
         },
         "page": 0,
         "size": 200,
     }
     resp = requests.post(
-        f"{ARMORCODE_BASE_URL}/user/findings", headers=armorcode_headers, json=body
+        f"{ARMORCODE_BASE_URL}/api/filter", headers=armorcode_headers, json=body
     )
     resp.raise_for_status()
     data = resp.json()
-    # Adjust this if your tenant's response wraps results differently
-    # (e.g. data["content"] vs data["findings"] vs top-level list).
-    return data.get("content", data.get("findings", []))
+    return data.get("content", [])
 
 
 def find_assignable_exception(finding_ids: list[int]) -> dict | None:
@@ -168,7 +167,8 @@ def main() -> None:
         return
 
     finding_ids = [f["id"] for f in findings]
-    product_ids = list({f["productId"] for f in findings if f.get("productId")})
+    # Findings carry the product ID as "apId" (subproduct is "aspId").
+    product_ids = list({f["apId"] for f in findings if f.get("apId")})
 
     existing = find_assignable_exception(finding_ids)
 
