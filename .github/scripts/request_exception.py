@@ -15,7 +15,7 @@ Flow:
   4. Post a confirmation comment back on the PR with a link to the exception.
 
 Endpoints used (all taken from the ArmorCode codebase):
-  - POST /api/filter                           search findings
+  - POST /api/findings/filter                           search findings
   - POST /api/risk-register/assignable         find a reusable exception
   - POST /api/risk-register                    create an exception
   - PUT  /user/findings/bulk/assign-risk-register  attach findings (APPEND)
@@ -62,9 +62,9 @@ def parse_reason(comment_body: str) -> str:
 
 def find_findings_for_repo(repo_name: str) -> list[dict]:
     """
-    POST /api/filter
+    POST /api/findings/filter
 
-    Confirmed from the codebase: findings search is POST /api/filter, with a
+    Confirmed from the codebase: findings search is POST /api/findings/filter, with a
     body of {"filters": {...}, "page": N, "size": N}. Filter keys come from
     FilterTypeEnum: repositoryName, status, productId, subProduct, id.
     Status values are lowercase (open, confirmed). Results are in "content",
@@ -79,7 +79,7 @@ def find_findings_for_repo(repo_name: str) -> list[dict]:
         "size": 200,
     }
     resp = requests.post(
-        f"{ARMORCODE_BASE_URL}/api/filter", headers=armorcode_headers, json=body
+        f"{ARMORCODE_BASE_URL}/api/findings/filter", headers=armorcode_headers, json=body
     )
     resp.raise_for_status()
     data = resp.json()
